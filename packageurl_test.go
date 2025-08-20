@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
@@ -33,19 +34,6 @@ import (
 
 	"github.com/package-url/packageurl-go"
 )
-
-type TestFixture struct {
-	Description   string     `json:"description"`
-	Purl          string     `json:"purl"`
-	CanonicalPurl string     `json:"canonical_purl"`
-	PackageType   string     `json:"type"`
-	Namespace     string     `json:"namespace"`
-	Name          string     `json:"name"`
-	Version       string     `json:"version"`
-	QualifierMap  OrderedMap `json:"qualifiers"`
-	Subpath       string     `json:"subpath"`
-	IsInvalid     bool       `json:"is_invalid"`
-}
 
 // OrderedMap is used to store the TestFixture.QualifierMap, to ensure that the
 // declaration order of qualifiers is preserved.
@@ -107,9 +95,18 @@ func (m *OrderedMap) UnmarshalJSON(bytes []byte) error {
 	}
 }
 
-// Qualifiers converts the TestFixture.QualifierMap field to an object of type
+type ComponentData struct {
+	PackageType  string     `json:"type"`
+	Namespace    string     `json:"namespace"`
+	Name         string     `json:"name"`
+	Version      string     `json:"version"`
+	QualifierMap OrderedMap `json:"qualifiers"`
+	Subpath      string     `json:"subpath"`
+}
+
+// Qualifiers converts the ComponentData.QualifierMap field to an object of type
 // packageurl.Qualifiers.
-func (t TestFixture) Qualifiers() packageurl.Qualifiers {
+func (t ComponentData) Qualifiers() packageurl.Qualifiers {
 	q := packageurl.Qualifiers{}
 
 	for _, key := range t.QualifierMap.OrderedKeys {
@@ -119,150 +116,198 @@ func (t TestFixture) Qualifiers() packageurl.Qualifiers {
 	return q
 }
 
-// TestFromStringExamples verifies that parsing example strings produce expected
-// results.
-func TestFromStringExamples(t *testing.T) {
-	// Read the json file
-	data, err := os.ReadFile("testdata/test-suite-data.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Load the json file contents into a structure
-	testData := []TestFixture{}
-	err = json.Unmarshal(data, &testData)
-	if err != nil {
-		t.Fatal(err)
+type ComponentsOrPurl struct {
+	Purl          *string
+	PurlComponent *ComponentData
+}
+
+func (cop *ComponentsOrPurl) UnmarshalJSON(data []byte) error {
+	// Try string first
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		cop.Purl = &s
+		return nil
 	}
 
-	// Use FromString on each item in the test set
-	for _, tc := range testData {
-		// Should parse without issue
-		p, err := packageurl.FromString(tc.Purl)
-		if tc.IsInvalid == false {
-			if err != nil {
-				t.Logf("%s failed: %s", tc.Description, err)
-				t.Fail()
-			}
-			// verify parsing
-			if p.Type != tc.PackageType {
-				t.Logf("%s: incorrect package type: wanted: '%s', got '%s'", tc.Description, tc.PackageType, p.Type)
-				t.Fail()
-			}
-			if p.Namespace != tc.Namespace {
-				t.Logf("%s: incorrect namespace: wanted: '%s', got '%s'", tc.Description, tc.Namespace, p.Namespace)
-				t.Fail()
-			}
-			if p.Name != tc.Name {
-				t.Logf("%s: incorrect name: wanted: '%s', got '%s'", tc.Description, tc.Name, p.Name)
-				t.Fail()
-			}
-			if p.Version != tc.Version {
-				t.Logf("%s: incorrect version: wanted: '%s', got '%s'", tc.Description, tc.Version, p.Version)
-				t.Fail()
-			}
-			want := tc.Qualifiers()
-			sort.Slice(want, func(i, j int) bool {
-				return want[i].Key < want[j].Key
-			})
-			got := p.Qualifiers
-			sort.Slice(got, func(i, j int) bool {
-				return got[i].Key < got[j].Key
-			})
-			if !reflect.DeepEqual(want, got) {
-				t.Logf("%s: incorrect qualifiers: wanted: '%#v', got '%#v'", tc.Description, want, p.Qualifiers)
-				t.Fail()
-			}
+	var comp ComponentData
+	if err := json.Unmarshal(data, &comp); err == nil {
+		cop.PurlComponent = &comp
+		return nil
+	}
 
-			if p.Subpath != tc.Subpath {
-				t.Logf("%s: incorrect subpath: wanted: '%s', got '%s'", tc.Description, tc.Subpath, p.Subpath)
+	return fmt.Errorf("ComponentsOrPurl: data is neither a string nor PURL component")
+}
+
+type TestFixture struct {
+	Description        string           `json:"description"`
+	TestGroup          string           `json:"test_group"`
+	TestType           string           `json:"test_type"`
+	Input              ComponentsOrPurl `json:"input"`
+	ExpectedFailure    bool             `json:"expected_failure"`
+	ExpectedOutput     ComponentsOrPurl `json:"expected_output"`
+	ExpectedFailureMsg *string          `json:"expected_failure_reason"`
+}
+
+type TestSuite struct {
+	Schema string        `json:"$schema"`
+	Tests  []TestFixture `json:"tests"`
+}
+
+func readJSONFilesFromDir(dirPath string) ([][]byte, error) {
+	var result [][]byte
+
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading dir %s: %w", dirPath, err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+
+		fullPath := filepath.Join(dirPath, entry.Name())
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading file %s: %w", fullPath, err)
+		}
+
+		result = append(result, data)
+	}
+
+	return result, nil
+}
+
+func roundTripTest(tc TestFixture, t *testing.T) {
+	p, err := packageurl.FromString(*tc.Input.Purl)
+	if tc.ExpectedFailure == false {
+		if err != nil {
+			t.Logf("%s failed: %s", tc.Description, err)
+			t.Fail()
+		}
+
+		if tc.ExpectedOutput.Purl != nil {
+			if *tc.ExpectedOutput.Purl != p.String() {
+				t.Logf("%s: '%s' test failed: wanted: '%s', got '%s'", tc.Description, tc.TestType, *tc.ExpectedOutput.Purl, p.String())
 				t.Fail()
 			}
 		} else {
-			// Invalid cases
-			if err == nil {
-				t.Logf("%s did not fail and returned %#v", tc.Description, p)
-				t.Fail()
-			}
+			t.Logf("%s: expected output nil: '%s'", tc.Description, *tc.ExpectedOutput.Purl)
+			t.Fail()
 		}
+
+	} else {
+		if err == nil {
+			t.Logf("%s did not fail and returned %#v", tc.Description, p)
+			t.Fail()
+		}
+
 	}
 }
 
-// TestToStringExamples verifies that the resulting package urls created match
-// the expected format.
-func TestToStringExamples(t *testing.T) {
-	// Read the json file
-	data, err := os.ReadFile("testdata/test-suite-data.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Load the json file contents into a structure
-	var testData []TestFixture
-	err = json.Unmarshal(data, &testData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Use ToString on each item
-	for _, tc := range testData {
-		// Skip invalid items
-		if tc.IsInvalid == true {
-			continue
+func parseTest(tc TestFixture, t *testing.T) {
+	p, err := packageurl.FromString(*tc.Input.Purl)
+	if tc.ExpectedFailure == false {
+		if err != nil {
+			t.Logf("%s failed: %s", tc.Description, err)
+			t.Fail()
 		}
-		instance := packageurl.NewPackageURL(
-			tc.PackageType, tc.Namespace, tc.Name, tc.Version,
-			// Use QualifiersFromMap so that the qualifiers have a defined order, which is needed for string comparisons
-			packageurl.QualifiersFromMap(tc.Qualifiers().Map()), tc.Subpath)
-		result := instance.ToString()
+		// verify parsing
+		expected := tc.ExpectedOutput.PurlComponent
+		if p.Type != expected.PackageType {
+			t.Logf("%s: incorrect package type: wanted: '%s', got '%s'", tc.Description, expected.PackageType, p.Type)
+			t.Fail()
+		}
+		if p.Namespace != expected.Namespace {
+			t.Logf("%s: incorrect namespace: wanted: '%s', got '%s'", tc.Description, expected.Namespace, p.Namespace)
+			t.Fail()
+		}
+		if p.Name != expected.Name {
+			t.Logf("%s: incorrect name: wanted: '%s', got '%s'", tc.Description, expected.Name, p.Name)
+			t.Fail()
+		}
+		if p.Version != expected.Version {
+			t.Logf("%s: incorrect version: wanted: '%s', got '%s'", tc.Description, expected.Version, p.Version)
+			t.Fail()
+		}
+		want := expected.Qualifiers()
+		sort.Slice(want, func(i, j int) bool {
+			return want[i].Key < want[j].Key
+		})
+		got := p.Qualifiers
+		sort.Slice(got, func(i, j int) bool {
+			return got[i].Key < got[j].Key
+		})
+		if !reflect.DeepEqual(want, got) {
+			t.Logf("%s: incorrect qualifiers: wanted: '%#v', got '%#v'", tc.Description, want, p.Qualifiers)
+			t.Fail()
+		}
 
-		// NOTE: We create a purl with ToString and then load into a PackageURL
-		//       because qualifiers may not be in any order. By reparsing back
-		//       we can ensure the data transfers between string and instance form.
-		canonical, _ := packageurl.FromString(tc.CanonicalPurl)
-		toTest, _ := packageurl.FromString(result)
-		// If the two results don't equal then the ToString failed
-		if !reflect.DeepEqual(toTest, canonical) {
-			t.Logf("%s failed: %s != %s", tc.Description, result, tc.CanonicalPurl)
+		if p.Subpath != expected.Subpath {
+			t.Logf("%s: incorrect subpath: wanted: '%s', got '%s'", tc.Description, expected.Subpath, p.Subpath)
+			t.Fail()
+		}
+	} else {
+		// Invalid cases
+		if err == nil {
+			t.Logf("%s did not fail and returned %#v", tc.Description, p)
 			t.Fail()
 		}
 	}
+
 }
 
-// TestStringer verifies that the Stringer implementation produces results
-// equivalent with the ToString method.
-func TestStringer(t *testing.T) {
-	// Read the json file
-	data, err := os.ReadFile("testdata/test-suite-data.json")
+func buildTest(tc TestFixture, t *testing.T) {
+	input := tc.Input.PurlComponent
+	instance := packageurl.NewPackageURL(
+		input.PackageType, input.Namespace, input.Name, input.Version,
+		// Use QualifiersFromMap so that the qualifiers have a defined order, which is needed for string comparisons
+		packageurl.QualifiersFromMap(input.Qualifiers().Map()), input.Subpath)
+	result := instance.ToString()
+	canonicalExpectedPurl := tc.ExpectedOutput.Purl
+
+	if tc.ExpectedFailure == false {
+		if result != *canonicalExpectedPurl {
+			t.Logf("%s: '%s' test failed: wanted: '%s', got '%s'", tc.Description, tc.TestType, *canonicalExpectedPurl, result)
+			t.Fail()
+		}
+	} else {
+		t.Logf("%s did not fail and returned %#v", tc.Description, instance)
+		t.Fail()
+	}
+
+}
+
+func TestPurlSpecFixtures(t *testing.T) {
+	testFiles, err := readJSONFilesFromDir("testdata/purl-spec/tests/types/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Load the json file contents into a structure
-	var testData []TestFixture
-	err = json.Unmarshal(data, &testData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Use ToString on each item
-	for _, tc := range testData {
-		// Skip invalid items
-		if tc.IsInvalid == true {
-			continue
-		}
-		purlPtr := packageurl.NewPackageURL(
-			tc.PackageType, tc.Namespace, tc.Name,
-			tc.Version, tc.Qualifiers(), tc.Subpath)
-		purlValue := *purlPtr
 
-		// Verify that the Stringer implementation returns a result
-		// equivalent to ToString().
-		if purlPtr.ToString() != purlPtr.String() {
-			t.Logf("%s failed: Stringer implementation differs from ToString: %s != %s", tc.Description, purlPtr.String(), purlPtr.ToString())
-			t.Fail()
+	for _, data := range testFiles {
+		var suite TestSuite
+		err := json.Unmarshal(data, &suite)
+		if err != nil {
+			t.Fatal(err)
 		}
 
-		// Verify that the %s format modifier works for values.
-		fmtStr := purlValue.String()
-		if fmtStr != purlPtr.String() {
-			t.Logf("%s failed: %%s format modifier does not work on values: %s != %s", tc.Description, fmtStr, purlPtr.ToString())
-			t.Fail()
+		for _, tc := range suite.Tests {
+			t.Run(tc.TestType, func(t *testing.T) {
+				testType := tc.TestType
+
+				switch testType {
+				case "roundtrip":
+					roundTripTest(tc, t)
+				case "parse":
+					parseTest(tc, t)
+				case "build":
+					buildTest(tc, t)
+				default:
+					t.Fatalf("Unsupported test type: %s", testType)
+				}
+
+			})
+
 		}
 	}
 }
