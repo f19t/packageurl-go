@@ -139,13 +139,13 @@ func (cop *ComponentsOrPurl) UnmarshalJSON(data []byte) error {
 }
 
 type TestFixture struct {
-	Description        string           `json:"description"`
-	TestGroup          string           `json:"test_group"`
-	TestType           string           `json:"test_type"`
-	Input              ComponentsOrPurl `json:"input"`
-	ExpectedFailure    bool             `json:"expected_failure"`
-	ExpectedOutput     ComponentsOrPurl `json:"expected_output"`
-	ExpectedFailureMsg *string          `json:"expected_failure_reason"`
+	Description           string           `json:"description"`
+	TestGroup             string           `json:"test_group"`
+	TestType              string           `json:"test_type"`
+	Input                 ComponentsOrPurl `json:"input"`
+	ExpectedFailure       bool             `json:"expected_failure"`
+	ExpectedOutput        ComponentsOrPurl `json:"expected_output"`
+	ExpectedFailureReason *string          `json:"expected_failure_reason"`
 }
 
 type TestSuite struct {
@@ -153,8 +153,13 @@ type TestSuite struct {
 	Tests  []TestFixture `json:"tests"`
 }
 
-func readJSONFilesFromDir(dirPath string) ([][]byte, error) {
-	var result [][]byte
+type jsonFile struct {
+	name    string
+	content []byte
+}
+
+func readJSONFilesFromDir(dirPath string) ([]jsonFile, error) {
+	var result []jsonFile
 
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
@@ -172,7 +177,7 @@ func readJSONFilesFromDir(dirPath string) ([][]byte, error) {
 			return nil, fmt.Errorf("reading file %s: %w", fullPath, err)
 		}
 
-		result = append(result, data)
+		result = append(result, jsonFile{name: entry.Name(), content: data})
 	}
 
 	return result, nil
@@ -266,14 +271,18 @@ func buildTest(tc TestFixture, t *testing.T) {
 	result := instance.ToString()
 	canonicalExpectedPurl := tc.ExpectedOutput.Purl
 
-	if tc.ExpectedFailure == false {
+	if tc.ExpectedFailure {
+		// String()/ToString() signature won't error so the only reasonable thing is to check this here.
+		err := instance.Normalize()
+		if err == nil {
+			t.Logf("'%s' did not fail for %#v", tc.Description, instance)
+			t.Fail()
+		}
+	} else {
 		if result != *canonicalExpectedPurl {
 			t.Logf("%s: '%s' test failed: wanted: '%s', got '%s'", tc.Description, tc.TestType, *canonicalExpectedPurl, result)
 			t.Fail()
 		}
-	} else {
-		t.Logf("%s did not fail and returned %#v", tc.Description, instance)
-		t.Fail()
 	}
 
 }
@@ -284,15 +293,16 @@ func TestPurlSpecFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, data := range testFiles {
+	for _, file := range testFiles {
 		var suite TestSuite
-		err := json.Unmarshal(data, &suite)
+		err := json.Unmarshal(file.content, &suite)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		for _, tc := range suite.Tests {
-			t.Run(tc.TestType, func(t *testing.T) {
+		for idx, tc := range suite.Tests {
+			testName := fmt.Sprintf("%s[%d]%s", file.name, (idx + 1), tc.TestType)
+			t.Run(testName, func(t *testing.T) {
 				testType := tc.TestType
 
 				switch testType {
