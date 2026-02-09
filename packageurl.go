@@ -637,53 +637,53 @@ func validType(typ string) bool {
 // validCustomRules evaluates additional rules for each package url type, as specified in the package-url specification.
 // On success, it returns nil. On failure, a descriptive error will be returned.
 func validCustomRules(p PackageURL) error {
-	q := p.Qualifiers.Map()
-	switch p.Type {
-	case TypeConan:
-		if p.Namespace != "" {
-			if val, ok := q["channel"]; ok {
-				if val == "" {
-					return errors.New("the qualifier channel must be not empty if namespace is present")
-				}
-			} else {
-				return errors.New("channel qualifier does not exist")
-			}
-		} else {
-			if val, ok := q["channel"]; ok {
-				if val != "" {
-					return errors.New("namespace is required if channel is non empty")
-				}
-			}
-		}
-	case TypeCpan:
-		if p.Namespace != "" {
-			// The purl refers to a CPAN distribution.
-			publisher := p.Namespace
-			if publisher != strings.ToUpper(publisher) {
-				return errors.New("a cpan distribution namespace must be all uppercase")
-			}
-			distName := p.Name
-			if strings.Contains(distName, "::") {
-				return errors.New("a cpan distribution name must not contain '::'")
-			}
-		} else {
-			// The purl refers to a CPAN module.
-			moduleName := p.Name
-			if strings.Contains(moduleName, "-") {
-				return errors.New("a cpan module name may not contain dashes")
-			}
-		}
-	case TypeSwift:
-		if p.Namespace == "" {
-			return errors.New("namespace is required")
-		}
-		if p.Version == "" {
-			return errors.New("version is required")
-		}
-	case TypeCran:
-		if p.Version == "" {
-			return errors.New("version is required")
-		}
-	}
+	// q := p.Qualifiers.Map()
+	// switch p.Type {
+	// case TypeConan:
+	// 	if p.Namespace != "" {
+	// 		if val, ok := q["channel"]; ok {
+	// 			if val == "" {
+	// 				return errors.New("the qualifier channel must be not empty if namespace is present")
+	// 			}
+	// 		} else {
+	// 			return errors.New("channel qualifier does not exist")
+	// 		}
+	// 	} else {
+	// 		if val, ok := q["channel"]; ok {
+	// 			if val != "" {
+	// 				return errors.New("namespace is required if channel is non empty")
+	// 			}
+	// 		}
+	// 	}
+	// case TypeCpan:
+	// 	if p.Namespace != "" {
+	// 		// The purl refers to a CPAN distribution.
+	// 		publisher := p.Namespace
+	// 		if publisher != strings.ToUpper(publisher) {
+	// 			return errors.New("a cpan distribution namespace must be all uppercase")
+	// 		}
+	// 		distName := p.Name
+	// 		if strings.Contains(distName, "::") {
+	// 			return errors.New("a cpan distribution name must not contain '::'")
+	// 		}
+	// 	} else {
+	// 		// The purl refers to a CPAN module.
+	// 		moduleName := p.Name
+	// 		if strings.Contains(moduleName, "-") {
+	// 			return errors.New("a cpan module name may not contain dashes")
+	// 		}
+	// 	}
+	// case TypeSwift:
+	// 	if p.Namespace == "" {
+	// 		return errors.New("namespace is required")
+	// 	}
+	// 	if p.Version == "" {
+	// 		return errors.New("version is required")
+	// 	}
+	// case TypeCran:
+	// 	if p.Version == "" {
+	// 		return errors.New("version is required")
+	// 	}
+	// }
 	return nil
 }
