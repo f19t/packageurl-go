@@ -1,3 +1,3 @@
-module github.com/package-url/packageurl-go
+module github.com/f19t/packageurl-go
 
 go 1.18
